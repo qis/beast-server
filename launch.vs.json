@@ -1,0 +1,14 @@
+{
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "default",
+      "name": "server.exe",
+      "project": "CMakeLists.txt",
+      "projectTarget": "server.exe",
+      "currentDir": "${workspaceRoot}",
+      "args": [ "0.0.0.0", "8081", "html" ]
+    }
+  ]
+}

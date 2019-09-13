@@ -1,0 +1,117 @@
+; Settings
+Name "@CPACK_NSIS_PACKAGE_NAME@"
+OutFile "@CPACK_TOPLEVEL_DIRECTORY@/@CPACK_OUTPUT_FILE_NAME@"
+InstallDir "@CPACK_NSIS_INSTALL_ROOT@\@CPACK_PACKAGE_INSTALL_DIRECTORY@"
+RequestExecutionLevel admin
+SetCompressor lzma
+
+; Modern UI
+!include "MUI.nsh"
+
+; Modern UI Settings
+!define MUI_ABORTWARNING
+
+; CPack Settings
+!define VERSION "@CPACK_PACKAGE_VERSION@"
+!define PATCH "@CPACK_PACKAGE_VERSION_PATCH@"
+!define INST_DIR "@CPACK_TEMPORARY_DIRECTORY@"
+
+; Icons
+@CPACK_NSIS_INSTALLER_MUI_ICON_CODE@
+
+; Uninstall Existing
+!include LogicLib.nsh
+
+!macro UninstallExisting exitcode uninstcommand
+  Push `${uninstcommand}`
+  Call UninstallExisting
+  Pop ${exitcode}
+!macroend
+
+Function UninstallExisting
+  Exch $1                      ; uninstall command
+  Push $2                      ; uninstall executable
+  Push $3                      ; length
+  StrCpy $3 ""
+  StrCpy $2 $1 1
+  StrCmp $2 '"' qloop sloop
+  sloop:
+  StrCpy $2 $1 1 $3
+  IntOp $3 $3 + 1
+  StrCmp $2 ' ' 0 sloop
+  IntOp $3 $3 - 1
+  Goto run
+  qloop:
+  StrCmp $3 "" 0 +2
+  StrCpy $1 $1 "" 1            ; remove initial quote
+  IntOp $3 $3 + 1
+  StrCpy $2 $1 1 $3
+  StrCmp $2 '"' 0 qloop
+  run:
+  StrCpy $2 $1 $3              ; path to uninstaller
+  StrCpy $1 161                ; ERROR_BAD_PATHNAME
+  GetFullPathName $3 "$2\.."   ; $InstDir
+  IfFileExists "$2" 0 +4
+  ExecWait '"$2" /S _?=$3' $1  ; assume the existing uninstaller is a NSIS uninstaller
+  IntCmp $1 0 "" +2 +2         ; don't delete the installer if it was aborted
+  Delete "$2"                  ; delete the uninstaller
+  RMDir "$3"                   ; try to delete $InstDir
+  RMDir "$3\.."                ; optional: try to delete the parent of $InstDir
+  Pop $3
+  Pop $2
+  Exch $1                      ; exitcode
+FunctionEnd
+
+; Initialize
+Function .onInit
+  ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "UninstallString"
+  ${If} $0 != ""
+  ${AndIf} ${Cmd} `MessageBox MB_YESNO|MB_ICONQUESTION "Uninstall previous version?" /SD IDYES IDYES`
+    !insertmacro UninstallExisting $0 $0
+    ${If} $0 <> 0
+      MessageBox MB_YESNO|MB_ICONSTOP "Failed to uninstall. Continue anyway?" /SD IDYES IDYES +2
+      Abort
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; Pages
+!insertmacro MUI_PAGE_LICENSE "@CPACK_RESOURCE_FILE_LICENSE@"
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+  
+; Languages
+!insertmacro MUI_LANGUAGE "English"
+
+; Sections
+Section "Install"
+  SetOutPath "$InstDir"
+  @CPACK_NSIS_FULL_INSTALL@
+  WriteRegStr HKCU "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_NSIS_PACKAGE_NAME@" "" "$InstDir"
+  CreateShortCut "$SMPROGRAMS\@CPACK_NSIS_PACKAGE_NAME@.lnk" "$InstDir\@CPACK_NSIS_INSTALLED_ICON_NAME@"
+  WriteUninstaller "$InstDir\uninstall.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "DisplayName" '@CPACK_NSIS_DISPLAY_NAME@'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "DisplayVersion" '@CPACK_PACKAGE_VERSION@'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "DisplayIcon" '$InstDir\@CPACK_NSIS_INSTALLED_ICON_NAME@'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "Publisher" '@CPACK_PACKAGE_VENDOR@'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "UninstallString" '"$InstDir\uninstall.exe"'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@" "NoRepair" '1'
+SectionEnd
+
+Section "Uninstall"
+  @CPACK_NSIS_DELETE_FILES@
+  @CPACK_NSIS_DELETE_DIRECTORIES@
+
+  Delete "$InstDir\uninstall.exe"
+  RMDir /r /REBOOTOK "$InstDir"
+
+  Delete "$SMPROGRAMS\@CPACK_NSIS_PACKAGE_NAME@.lnk"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_VENDOR@ @CPACK_NSIS_PACKAGE_NAME@"
+  DeleteRegKey HKCU "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_NSIS_PACKAGE_NAME@"
+  DeleteRegKey /ifempty HKCU "Software\@CPACK_PACKAGE_VENDOR@"
+SectionEnd
+
+; vim:ft=nsis
