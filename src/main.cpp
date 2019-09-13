@@ -19,9 +19,25 @@
 #include <cstdio>
 #include <cstdlib>
 
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+
+template <typename Buffer, typename Request>
+asio::awaitable<beast::error_code> recv(beast::tcp_stream& stream, Buffer& buffer, Request& request) noexcept {
+  const auto result = co_await http::async_read(stream, buffer, request, as_result(asio::use_awaitable));
+  co_return result ? beast::error_code{} : result.error();
+}
+
+template <typename Response>
+asio::awaitable<beast::error_code> send(beast::tcp_stream& stream, Response response) noexcept {
+  const auto result = co_await http::async_write(stream, response, as_result(asio::use_awaitable));
+  co_return result ? beast::error_code{} : result.error();
+}
+
 // Return a reasonable mime type based on the extension of a file.
 std::string_view mime_type(std::string_view path) {
-  using boost::beast::iequals;
+  using beast::iequals;
   auto const ext = [&path] {
     auto const pos = path.rfind(".");
     if (pos == std::string_view::npos)
@@ -96,16 +112,16 @@ std::string path_cat(std::string_view base, std::string_view path) {
   return result;
 }
 
-template <typename Request = boost::beast::http::request<boost::beast::http::string_body>>
-boost::asio::awaitable<boost::beast::error_code> handle(boost::beast::tcp_stream& stream, Request& request, std::string_view root) {
+template <typename Request = http::request<http::string_body>>
+asio::awaitable<beast::error_code> handle(beast::tcp_stream& stream, const Request& request, std::string_view root) {
   // Returns a bad request response.
-  const auto bad_request = [&request](boost::beast::string_view why) {
-    boost::beast::http::response<boost::beast::http::string_body> response{
-      boost::beast::http::status::bad_request,
+  const auto bad_request = [&request](beast::string_view why) {
+    http::response<http::string_body> response{
+      http::status::bad_request,
       request.version(),
     };
-    response.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-    response.set(boost::beast::http::field::content_type, "text/html");
+    response.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+    response.set(http::field::content_type, "text/html");
     response.keep_alive(request.keep_alive());
     response.body() = std::string(why);
     response.prepare_payload();
@@ -113,13 +129,13 @@ boost::asio::awaitable<boost::beast::error_code> handle(boost::beast::tcp_stream
   };
 
   // Returns a not found response.
-  const auto not_found = [&request](boost::beast::string_view target) {
-    boost::beast::http::response<boost::beast::http::string_body> response{
-      boost::beast::http::status::not_found,
+  const auto not_found = [&request](beast::string_view target) {
+    http::response<http::string_body> response{
+      http::status::not_found,
       request.version(),
     };
-    response.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-    response.set(boost::beast::http::field::content_type, "text/html");
+    response.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+    response.set(http::field::content_type, "text/html");
     response.keep_alive(request.keep_alive());
     response.body() = "The resource '" + std::string(target) + "' was not found.";
     response.prepare_payload();
@@ -127,33 +143,27 @@ boost::asio::awaitable<boost::beast::error_code> handle(boost::beast::tcp_stream
   };
 
   // Returns a server error response.
-  const auto server_error = [&request](boost::beast::string_view what) {
-    boost::beast::http::response<boost::beast::http::string_body> response{
-      boost::beast::http::status::internal_server_error,
+  const auto server_error = [&request](beast::string_view what) {
+    http::response<http::string_body> response{
+      http::status::internal_server_error,
       request.version(),
     };
-    response.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-    response.set(boost::beast::http::field::content_type, "text/html");
+    response.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+    response.set(http::field::content_type, "text/html");
     response.keep_alive(request.keep_alive());
     response.body() = "An error occurred: '" + std::string(what) + "'";
     response.prepare_payload();
     return response;
   };
 
-  // Sends response to client.
-  const auto send = [&](auto response) -> boost::asio::awaitable<boost::beast::error_code> {
-    const auto result = co_await boost::beast::http::async_write(stream, response, as_result(boost::asio::use_awaitable));
-    co_return result.error();
-  };
-
   // Make sure we can handle the method.
-  if (request.method() != boost::beast::http::verb::get && request.method() != boost::beast::http::verb::head) {
-    return send(bad_request("Unknown HTTP-method"));
+  if (request.method() != http::verb::get && request.method() != http::verb::head) {
+    co_return co_await send(stream, bad_request("Unknown HTTP-method"));
   }
 
   // Request path must be absolute and not contain "..".
-  if (request.target().empty() || request.target()[0] != '/' || request.target().find("..") != boost::beast::string_view::npos) {
-    return send(bad_request("Illegal request-target"));
+  if (request.target().empty() || request.target()[0] != '/' || request.target().find("..") != beast::string_view::npos) {
+    co_return co_await send(stream, bad_request("Illegal request-target"));
   }
 
   // Build the path to the requested file.
@@ -163,87 +173,91 @@ boost::asio::awaitable<boost::beast::error_code> handle(boost::beast::tcp_stream
   }
 
   // Attempt to open the file.
-  boost::beast::error_code ec;
-  boost::beast::http::file_body::value_type body;
-  body.open(path.data(), boost::beast::file_mode::scan, ec);
+  beast::error_code ec;
+  http::file_body::value_type body;
+  body.open(path.data(), beast::file_mode::scan, ec);
 
   // Handle the case where the file doesn't exist.
-  if (ec == boost::beast::errc::no_such_file_or_directory) {
-    return send(not_found(request.target()));
+  if (ec == beast::errc::no_such_file_or_directory) {
+    co_return co_await send(stream, not_found(request.target()));
   }
 
   // Handle an unknown error.
   if (ec) {
-    return send(server_error(ec.message()));
+    co_return co_await send(stream, server_error(ec.message()));
   }
 
   // Cache the size since we need it after the move.
   const auto size = body.size();
 
   // Respond to HEAD request.
-  if (request.method() == boost::beast::http::verb::head) {
-    boost::beast::http::response<boost::beast::http::empty_body> response{
-      boost::beast::http::status::ok,
+  if (request.method() == http::verb::head) {
+    http::response<http::empty_body> response{
+      http::status::ok,
       request.version(),
     };
-    response.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-    response.set(boost::beast::http::field::content_type, mime_type(path));
+    response.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+    response.set(http::field::content_type, mime_type(path));
     response.content_length(size);
     response.keep_alive(request.keep_alive());
-    return send(std::move(response));
+    co_return co_await send(stream, std::move(response));
   }
 
   // Respond to GET request.
-  boost::beast::http::response<boost::beast::http::file_body> response{
+  http::response<http::file_body> response{
     std::piecewise_construct,
     std::make_tuple(std::move(body)),
-    std::make_tuple(boost::beast::http::status::ok, request.version()),
+    std::make_tuple(http::status::ok, request.version()),
   };
-  response.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-  response.set(boost::beast::http::field::content_type, mime_type(path));
+  response.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+  response.set(http::field::content_type, mime_type(path));
   response.content_length(size);
   response.keep_alive(request.keep_alive());
-  return send(std::move(response));
+  co_return co_await send(stream, std::move(response));
 }
 
-auto session(boost::asio::ip::tcp::socket socket, std::string_view root) {
-  return [socket = std::move(socket), root]() mutable -> boost::asio::awaitable<void> {
-    boost::beast::tcp_stream stream(std::move(socket));
+auto session(asio::ip::tcp::socket socket, std::string_view root) {
+  return [socket = std::move(socket), root]() mutable -> asio::awaitable<void> {
+    beast::tcp_stream stream(std::move(socket));
     stream.expires_after(std::chrono::seconds(30));
 
-    boost::beast::flat_buffer buffer;
-    boost::beast::http::request<boost::beast::http::string_body> request;
-    const auto size = co_await boost::beast::http::async_read(stream, buffer, request, as_result(boost::asio::use_awaitable));
-    if (!size) {
-      if (size.error() == boost::beast::http::error::end_of_stream) {
-        boost::beast::error_code ec;
-        stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+    while (true) {
+      beast::flat_buffer buffer;
+      http::request<http::string_body> request;
+      if (auto ec = co_await recv(stream, buffer, request)) {
+        if (ec == http::error::end_of_stream) {
+          stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+          co_return;
+        }
+        LOGE("recv: {}", ec.message());
         co_return;
       }
-      LOGE("read: {}", size.error().message());
-      co_return;
+
+      if (auto ec = co_await handle(stream, request, root)) {
+        if (ec == http::error::end_of_stream) {
+          stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+          co_return;
+        }
+        LOGE("send: {}", ec.message());
+        co_return;
+      }
     }
-    co_await handle(stream, request, root);
   };
 }
 
-auto server(boost::asio::io_context& ioc, boost::asio::ip::tcp::endpoint endpoint, std::string_view root) {
-  return [&ioc, endpoint = std::move(endpoint), root]() -> boost::asio::awaitable<void> {
-    boost::asio::ip::tcp::acceptor acceptor{ boost::asio::make_strand(ioc) };
+auto server(asio::executor executor, asio::ip::tcp::endpoint endpoint, std::string_view root) {
+  return [executor, endpoint = std::move(endpoint), root]() -> asio::awaitable<void> {
     try {
-      acceptor.open(endpoint.protocol());
-      acceptor.set_option(boost::asio::socket_base::reuse_address(true));
-      acceptor.bind(endpoint);
-      acceptor.listen(boost::asio::socket_base::max_listen_connections);
+      asio::ip::tcp::acceptor acceptor{ asio::make_strand(executor), endpoint, true };
+      while (true) {
+        if (auto socket = co_await acceptor.async_accept(as_result(asio::use_awaitable))) {
+          asio::co_spawn(executor, session(std::move(socket.value()), root), asio::detached);
+        }
+      }
     }
     catch (const std::exception& e) {
       LOGC("{}", e.what());
       co_return;
-    }
-    while (true) {
-      if (auto socket = co_await acceptor.async_accept(as_result(boost::asio::use_awaitable))) {
-        boost::asio::co_spawn(ioc, session(std::move(socket.value()), root), boost::asio::detached);
-      }
     }
   };
 }
@@ -253,7 +267,8 @@ int main(int argc, char* argv[]) {
     std::fputs("Usage: http-server-async <address> <port> <root>\n", stderr);
     return EXIT_FAILURE;
   }
-  const auto address = boost::asio::ip::make_address(argv[1]);
+
+  const auto address = asio::ip::make_address(argv[1]);
   const auto port = static_cast<unsigned short>(std::atoi(argv[2]));
   const auto root = std::string(argv[3]);
 
@@ -261,9 +276,9 @@ int main(int argc, char* argv[]) {
   spdlog::stdout_color_mt<spdlog::async_factory>("server")->set_pattern(LOG_PATTERN);
   spdlog::set_default_logger(spdlog::get("server"));
 
-  boost::asio::io_context ioc{ 1 };
-  boost::asio::ip::tcp::endpoint endpoint{ address, port };
-  boost::asio::co_spawn(ioc, server(ioc, endpoint, root), boost::asio::detached);
+  asio::io_context ioc{ 1 };
+  auto executor = ioc.get_executor();
+  asio::co_spawn(executor, server(executor, asio::ip::tcp::endpoint{ address, port }, root), asio::detached);
   ioc.run();
 
   return EXIT_SUCCESS;
